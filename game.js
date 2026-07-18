@@ -45,6 +45,27 @@ const ctx    = canvas.getContext('2d');
 canvas.width  = W;
 canvas.height = H;
 
+// Mobile detection
+const isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// Touch control constants (design coords)
+const JOY_R    = 50;   // joystick outer radius
+const JOY_DEAD = 14;   // dead zone
+const JOY_ZONE = VW * 0.44; // left portion = joystick area
+const BTN_J    = { x: VW - 65, y: 390, r: 36 }; // jump button
+const BTN_D    = { x: VW - 65, y: 437, r: 24 }; // down button
+
+// Touch control state
+const CTRL = {
+  joyId:    null,
+  joyCX:    80,
+  joyCY:    412,
+  joyDx:    0,
+  joyOn:    false,
+  jumpId:   null,
+  downId:   null,
+};
+
 // Stars cover the virtual width
 const STARS = Array.from({ length: 70 }, (_, i) => ({
   x: (i * 137 + 23) % VW,
@@ -93,9 +114,62 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { K[e.key] = false; });
 
-function isLeft()  { return K['a'] || K['A'] || K['ArrowLeft'];  }
-function isRight() { return K['d'] || K['D'] || K['ArrowRight']; }
-function isDown()  { return K['s'] || K['S'] || K['ArrowDown'];  }
+function isLeft()  { return K['a'] || K['A'] || K['ArrowLeft']  || CTRL.joyDx < -JOY_DEAD; }
+function isRight() { return K['d'] || K['D'] || K['ArrowRight'] || CTRL.joyDx >  JOY_DEAD; }
+function isDown()  { return K['s'] || K['S'] || K['ArrowDown']  || CTRL.downId !== null; }
+
+// ── Touch controls ─────────────────────────────────────────────────
+function td(t) { return { x: t.clientX / S, y: t.clientY / S }; }
+function inC(px, py, cx, cy, r) { return (px-cx)**2 + (py-cy)**2 <= r*r; }
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const d = td(t);
+    if (phase !== 'play') { startGame(); break; }
+    // Joystick zone (left side)
+    if (d.x < JOY_ZONE && CTRL.joyId === null) {
+      CTRL.joyId = t.identifier;
+      CTRL.joyCX = d.x; CTRL.joyCY = d.y;
+      CTRL.joyDx = 0;   CTRL.joyOn = true;
+      continue;
+    }
+    // Jump button
+    if (inC(d.x, d.y, BTN_J.x, BTN_J.y, BTN_J.r * 1.4) && CTRL.jumpId === null) {
+      CTRL.jumpId = t.identifier;
+      tryJump(); continue;
+    }
+    // Down button
+    if (inC(d.x, d.y, BTN_D.x, BTN_D.y, BTN_D.r * 1.4) && CTRL.downId === null) {
+      CTRL.downId = t.identifier; continue;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === CTRL.joyId) {
+      CTRL.joyDx = td(t).x - CTRL.joyCX;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === CTRL.joyId)  { CTRL.joyId = null; CTRL.joyDx = 0; CTRL.joyOn = false; }
+    if (t.identifier === CTRL.jumpId) { CTRL.jumpId = null; }
+    if (t.identifier === CTRL.downId) { CTRL.downId = null; }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', e => {
+  CTRL.joyId = null; CTRL.joyDx = 0; CTRL.joyOn = false;
+  CTRL.jumpId = null; CTRL.downId = null;
+}, { passive: false });
+
+window.addEventListener('orientationchange', () => setTimeout(() => location.reload(), 150));
 
 function tryJump() {
   if (pl.jumpsLeft > 0) {
@@ -685,6 +759,9 @@ function draw(t) {
     ctx.fillText('= előre warp (S)', 34, 90);
   }
 
+  // ── Mobile controls ────────────────────────────────────────────
+  drawMobileControls();
+
   // ── Overlays ───────────────────────────────────────────────────
   if (phase === 'start') {
     drawOverlay('PUMPKIN RUN', [
@@ -715,6 +792,63 @@ function draw(t) {
   }
 
   ctx.restore(); // end scale
+}
+
+function drawMobileControls() {
+  if (!isMobile) return;
+  ctx.save();
+  ctx.lineWidth = 2.5;
+
+  // ── Joystick ───────────────────────────────────────────────────
+  const jcx = CTRL.joyOn ? CTRL.joyCX : 80;
+  const jcy = CTRL.joyOn ? CTRL.joyCY : 412;
+  // Outer ring
+  ctx.globalAlpha = CTRL.joyOn ? 0.55 : 0.22;
+  ctx.fillStyle   = 'rgba(255,255,255,0.12)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath(); ctx.arc(jcx, jcy, JOY_R, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  // Inner knob
+  const kx = jcx + Math.max(-JOY_R + 16, Math.min(JOY_R - 16, CTRL.joyDx));
+  ctx.globalAlpha = CTRL.joyOn ? 0.8 : 0.3;
+  ctx.fillStyle   = 'rgba(255,255,255,0.75)';
+  ctx.beginPath(); ctx.arc(kx, jcy, 18, 0, Math.PI * 2); ctx.fill();
+  // Hint arrows when idle
+  if (!CTRL.joyOn) {
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle   = '#fff';
+    ctx.font        = 'bold 16px monospace';
+    ctx.textAlign   = 'center';
+    ctx.fillText('◀  ▶', jcx, jcy + 6);
+  }
+
+  // ── Jump button ────────────────────────────────────────────────
+  const jp = CTRL.jumpId !== null;
+  ctx.globalAlpha = jp ? 0.85 : 0.4;
+  ctx.fillStyle   = jp ? 'rgba(80,190,255,0.6)' : 'rgba(255,255,255,0.12)';
+  ctx.strokeStyle = 'rgba(80,190,255,0.85)';
+  ctx.beginPath(); ctx.arc(BTN_J.x, BTN_J.y, BTN_J.r, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle  = '#fff';
+  ctx.font       = `bold 22px monospace`;
+  ctx.textAlign  = 'center';
+  ctx.fillText('▲', BTN_J.x, BTN_J.y + 8);
+
+  // ── Down button ────────────────────────────────────────────────
+  const dp = CTRL.downId !== null;
+  ctx.globalAlpha = dp ? 0.85 : 0.38;
+  ctx.fillStyle   = dp ? 'rgba(255,210,80,0.6)' : 'rgba(255,255,255,0.1)';
+  ctx.strokeStyle = 'rgba(255,210,80,0.8)';
+  ctx.lineWidth   = 2;
+  ctx.beginPath(); ctx.arc(BTN_D.x, BTN_D.y, BTN_D.r, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font      = 'bold 15px monospace';
+  ctx.fillText('▼', BTN_D.x, BTN_D.y + 6);
+
+  ctx.globalAlpha = 1;
+  ctx.textAlign   = 'left';
+  ctx.restore();
 }
 
 function drawOverlay(title, lines) {
