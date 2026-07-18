@@ -26,8 +26,10 @@ const COIN_R      = 10;
 const BIRD_W      = 38;
 const BIRD_H      = 26;
 const PLAT_H      = 14;
-const CHUNK       = 680;
+const CHUNK        = 680;
 const MIN_PLAT_GAP = 80;
+const BULLET_SPD   = 12;
+const SHOOT_CD     = 18; // frames between shots
 
 // 4 fixed coin levels (design y, lower y = higher on screen)
 const COIN_LEVELS = [
@@ -54,6 +56,7 @@ const JOY_DEAD = 14;   // dead zone
 const JOY_ZONE = VW * 0.44; // left portion = joystick area
 const BTN_J    = { x: VW - 65, y: 390, r: 36 }; // jump button
 const BTN_D    = { x: VW - 65, y: 437, r: 24 }; // down button
+const BTN_S    = { x: VW - 135, y: 415, r: 30 }; // shoot button
 
 // Touch control state
 const CTRL = {
@@ -64,6 +67,7 @@ const CTRL = {
   joyOn:    false,
   jumpId:   null,
   downId:   null,
+  shootId:  null,
 };
 
 // Stars cover the virtual width
@@ -96,7 +100,7 @@ let warpFlash = 0;     // frames remaining for warp flash
 let warpDir   = 0;     // +1 forward, -1 backward (for flash color)
 
 let pl;
-let pipes, platforms, birds, coins;
+let pipes, platforms, birds, coins, bullets;
 let generatedChunks;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -107,7 +111,8 @@ window.addEventListener('keydown', e => {
   if (K[e.key]) return;
   K[e.key] = true;
   if (phase === 'play') {
-    if (e.key === ' ' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') tryJump();
+    if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') tryJump();
+    if (e.key === ' ') tryShoot();
   } else {
     if (e.key === ' ' || e.key === 'Enter') startGame();
   }
@@ -143,6 +148,11 @@ canvas.addEventListener('touchstart', e => {
     if (inC(d.x, d.y, BTN_D.x, BTN_D.y, BTN_D.r * 1.4) && CTRL.downId === null) {
       CTRL.downId = t.identifier; continue;
     }
+    // Shoot button
+    if (inC(d.x, d.y, BTN_S.x, BTN_S.y, BTN_S.r * 1.4) && CTRL.shootId === null) {
+      CTRL.shootId = t.identifier;
+      tryShoot(); continue;
+    }
   }
 }, { passive: false });
 
@@ -158,15 +168,16 @@ canvas.addEventListener('touchmove', e => {
 canvas.addEventListener('touchend', e => {
   e.preventDefault();
   for (const t of e.changedTouches) {
-    if (t.identifier === CTRL.joyId)  { CTRL.joyId = null; CTRL.joyDx = 0; CTRL.joyOn = false; }
-    if (t.identifier === CTRL.jumpId) { CTRL.jumpId = null; }
-    if (t.identifier === CTRL.downId) { CTRL.downId = null; }
+    if (t.identifier === CTRL.joyId)   { CTRL.joyId = null; CTRL.joyDx = 0; CTRL.joyOn = false; }
+    if (t.identifier === CTRL.jumpId)  { CTRL.jumpId = null; }
+    if (t.identifier === CTRL.downId)  { CTRL.downId = null; }
+    if (t.identifier === CTRL.shootId) { CTRL.shootId = null; }
   }
 }, { passive: false });
 
 canvas.addEventListener('touchcancel', e => {
   CTRL.joyId = null; CTRL.joyDx = 0; CTRL.joyOn = false;
-  CTRL.jumpId = null; CTRL.downId = null;
+  CTRL.jumpId = null; CTRL.downId = null; CTRL.shootId = null;
 }, { passive: false });
 
 window.addEventListener('orientationchange', () => setTimeout(() => location.reload(), 150));
@@ -177,6 +188,17 @@ function tryJump() {
     pl.onGround = false;
     pl.jumpsLeft--;
   }
+}
+
+function tryShoot() {
+  if (!pl || pl.shootCooldown > 0) return;
+  const h = pl.crouching ? PL_CROUCH_H : PL_H;
+  bullets.push({
+    x:  pl.x + pl.facing * (PL_W / 2 + 8),
+    y:  pl.py - h * 0.5,
+    vx: pl.facing * BULLET_SPD,
+  });
+  pl.shootCooldown = SHOOT_CD;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -191,6 +213,7 @@ function startGame() {
   platforms       = [];
   birds           = [];
   coins           = [];
+  bullets         = [];
   generatedChunks = new Set();
 
   pl = {
@@ -203,9 +226,13 @@ function startGame() {
     legPhase:   0,
     jumpsLeft:  2,
     onWarpPipe: null,
-    coinCombo:  0,
-    comboTimer: 0,
-    comboPopup: null, // { text, x, y, life }
+    coinCombo:   0,
+    comboTimer:  0,
+    comboPopup:  null,
+    lives:        3,
+    birdsKilled:  0,
+    invincible:   0,
+    shootCooldown: 0,
   };
 
   phase = 'play';
@@ -333,7 +360,7 @@ function genChunk(ci) {
       const bx  = ox + rng() * (CHUNK - BIRD_W);
       const by  = GROUND_TOP - 90 - rng() * 150;
       const spd = 0.6 + diff * 0.9 + rng() * 0.5;
-      birds.push({ x: bx, y: by, vx: rng() > 0.5 ? spd : -spd, ox: bx, range: 80 + rng() * 180 });
+      birds.push({ x: bx, y: by, vx: rng() > 0.5 ? spd : -spd, ox: bx, range: 80 + rng() * 180, dead: false, deathVy: 0, angle: 0 });
     }
   }
 
@@ -454,13 +481,91 @@ function update() {
   const hbW    = PL_W;
   const hbH    = h;
 
-  // ── Birds → die ────────────────────────────────────────────────
-  for (const bird of birds) {
-    bird.x += bird.vx;
-    if (bird.x < bird.ox - bird.range || bird.x > bird.ox + bird.range) bird.vx *= -1;
-    if (overlap(hbLeft, hbTop, hbW, hbH, bird.x + 2, bird.y + 2, BIRD_W - 4, BIRD_H - 4)) {
-      die(); return;
+  // ── Birds ──────────────────────────────────────────────────────
+  if (pl.invincible > 0) pl.invincible--;
+
+  for (let bi = birds.length - 1; bi >= 0; bi--) {
+    const b = birds[bi];
+
+    // Halott madár: esik ki a képernyőből
+    if (b.dead) {
+      b.deathVy += 0.5;
+      b.y       += b.deathVy;
+      b.angle   += 0.18;
+      if (b.y > GROUND_TOP + 250) birds.splice(bi, 1);
+      continue;
     }
+
+    // Mozgás
+    b.x += b.vx;
+    if (b.x < b.ox - b.range || b.x > b.ox + b.range) b.vx *= -1;
+
+    // Fejre ugrás (stomp): játékos esik, lába felülről éri a madár tetejét
+    const bTop   = b.y + 3;
+    const stomped = pl.vy > 0 &&
+      prevPY    <= bTop + 6 &&
+      pl.py     >= bTop &&
+      hbLeft     < b.x + BIRD_W - 4 &&
+      hbLeft + hbW > b.x + 4;
+
+    if (stomped) {
+      b.dead    = true;
+      b.deathVy = 1.5;
+      b.vx      = (b.vx > 0 ? 1 : -1) * 0.5; // lassú vízszintes sodródás
+
+      pl.vy        = JUMP_VEL * 0.65;  // visszapattanás
+      pl.onGround  = false;
+      pl.jumpsLeft = 2;
+
+      pl.birdsKilled++;
+      score += 150;
+
+      if (pl.birdsKilled % 5 === 0) {
+        pl.lives++;
+        pl.comboPopup = { text: `+1 ÉLET! ❤️ (${pl.lives})`, x: pl.x, y: pl.py - PL_H - 24, life: 90 };
+      } else {
+        pl.comboPopup = { text: `+150! 💀 (${pl.birdsKilled} madár)`, x: pl.x, y: pl.py - PL_H - 24, life: 55 };
+      }
+      continue;
+    }
+
+    // Normál ütközés → élet vesztés
+    if (pl.invincible <= 0 && overlap(hbLeft, hbTop, hbW, hbH, b.x + 2, b.y + 2, BIRD_W - 4, BIRD_H - 4)) {
+      pl.lives--;
+      pl.invincible = 100;
+      pl.vy         = JUMP_VEL * 0.45;
+      if (pl.lives <= 0) { die(); return; }
+      pl.comboPopup = { text: `❤️ ${pl.lives} élet maradt`, x: pl.x, y: pl.py - PL_H - 24, life: 70 };
+    }
+  }
+
+  // ── Shoot cooldown & bullets ───────────────────────────────────
+  if (pl.shootCooldown > 0) pl.shootCooldown--;
+
+  for (let bi2 = bullets.length - 1; bi2 >= 0; bi2--) {
+    const blt = bullets[bi2];
+    blt.x += blt.vx;
+    if (blt.x < camX - 60 || blt.x > camX + VW + 60) { bullets.splice(bi2, 1); continue; }
+    let hit = false;
+    for (const b of birds) {
+      if (b.dead) continue;
+      if (blt.x > b.x && blt.x < b.x + BIRD_W && blt.y > b.y && blt.y < b.y + BIRD_H) {
+        b.dead    = true;
+        b.deathVy = 1.5;
+        b.vx      = blt.vx * 0.08;
+        pl.birdsKilled++;
+        score += 150;
+        if (pl.birdsKilled % 5 === 0) {
+          pl.lives++;
+          pl.comboPopup = { text: `+1 ÉLET! ❤️ (${pl.lives})`, x: pl.x, y: pl.py - PL_H - 24, life: 90 };
+        } else {
+          pl.comboPopup = { text: `+150! 💀 (${pl.birdsKilled} madár)`, x: pl.x, y: pl.py - PL_H - 24, life: 55 };
+        }
+        hit = true;
+        break;
+      }
+    }
+    if (hit) bullets.splice(bi2, 1);
   }
 
   // ── Combo timer ────────────────────────────────────────────────
@@ -551,6 +656,8 @@ function drawPipe(pipe, t) {
 }
 
 function drawPlayer() {
+  if (pl.invincible > 0 && Math.floor(pl.invincible / 5) % 2 === 0) return;
+
   const h      = pl.crouching ? PL_CROUCH_H : PL_H;
   const top    = pl.py - h;
   const inAir  = !pl.onGround;
@@ -605,6 +712,27 @@ function drawPlayer() {
     ctx.fillStyle = '#FFCC80';
     ctx.fillRect( PL_W / 2 - 2, bodyTop + 14 + as, 6, 5);
     ctx.fillRect(-PL_W / 2 - 4, bodyTop + 14 - as, 6, 5);
+    // Gun (extends from front hand — always mirrored by ctx.scale(facing))
+    const gy = bodyTop + 14 + as;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(PL_W / 2 + 4,  gy,     14, 6); // barrel
+    ctx.fillStyle = '#555';
+    ctx.fillRect(PL_W / 2 + 4,  gy + 1,  3, 4); // grip highlight
+    ctx.fillStyle = '#222';
+    ctx.fillRect(PL_W / 2 + 16, gy + 1,  4, 4); // muzzle
+    ctx.fillStyle = '#5D4037';
+    ctx.fillRect(PL_W / 2 + 5,  gy + 5,  8, 5); // handle
+    // Muzzle flash when just shot
+    if (pl.shootCooldown > SHOOT_CD - 4) {
+      ctx.fillStyle = '#FFD600';
+      ctx.beginPath();
+      ctx.arc(PL_W / 2 + 22, gy + 3, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#FF6D00';
+      ctx.beginPath();
+      ctx.arc(PL_W / 2 + 22, gy + 3, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   const headTop = bodyTop - 22;
@@ -716,24 +844,57 @@ function draw(t) {
       ctx.fill();
     }
 
+    // Bullets
+    for (const blt of bullets) {
+      if (blt.x < camX - 20 || blt.x > camX + VW + 20) continue;
+      // Trail
+      ctx.fillStyle = 'rgba(255,150,0,0.45)';
+      ctx.fillRect(blt.x - blt.vx * 2, blt.y - 2, Math.abs(blt.vx) * 2, 4);
+      // Bullet
+      ctx.fillStyle = '#FFD600';
+      ctx.beginPath();
+      ctx.arc(blt.x, blt.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(blt.x - 1, blt.y - 1, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Birds
     for (const b of birds) {
       if (b.x + BIRD_W < camX - 10 || b.x > camX + VW + 10) continue;
-      const wing = Math.sin(t * 9 + b.ox * 0.01) * 0.45;
       ctx.save();
       ctx.translate(b.x + BIRD_W / 2, b.y + BIRD_H / 2);
-      if (b.vx < 0) ctx.scale(-1, 1);
-      ctx.fillStyle = '#C62828';
-      ctx.fillRect(-14, -6, 28, 16);
-      ctx.save();
-      ctx.translate(0, -5); ctx.rotate(-wing);
-      ctx.fillStyle = '#B71C1C';
-      ctx.fillRect(-16, -7, 32, 8);
-      ctx.restore();
-      ctx.fillStyle = '#B71C1C'; ctx.fillRect(-14, 6, 10, 6);
-      ctx.fillStyle = '#fff';    ctx.fillRect(8, -4, 7, 6);
-      ctx.fillStyle = '#111';    ctx.fillRect(11, -3, 4, 4);
-      ctx.fillStyle = '#FF8F00'; ctx.fillRect(14, 1, 9, 5);
+      if (b.dead) {
+        // Halott madár: forog és esik, X-es szem
+        ctx.rotate(b.angle);
+        ctx.globalAlpha = Math.max(0, 1 - b.deathVy / 18);
+        ctx.fillStyle = '#555';
+        ctx.fillRect(-14, -6, 28, 16);
+        ctx.fillStyle = '#333'; ctx.fillRect(-14, 6, 10, 6);
+        // X szem
+        ctx.fillStyle = '#fff'; ctx.fillRect(8, -4, 7, 6);
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(9, -3, 2, 2); ctx.fillRect(13, -3, 2, 2);
+        ctx.fillRect(11, -1, 2, 2);
+        ctx.fillRect(9, 1, 2, 2);  ctx.fillRect(13, 1, 2, 2);
+        ctx.globalAlpha = 1;
+      } else {
+        const wing = Math.sin(t * 9 + b.ox * 0.01) * 0.45;
+        if (b.vx < 0) ctx.scale(-1, 1);
+        ctx.fillStyle = '#C62828';
+        ctx.fillRect(-14, -6, 28, 16);
+        ctx.save();
+        ctx.translate(0, -5); ctx.rotate(-wing);
+        ctx.fillStyle = '#B71C1C';
+        ctx.fillRect(-16, -7, 32, 8);
+        ctx.restore();
+        ctx.fillStyle = '#B71C1C'; ctx.fillRect(-14, 6, 10, 6);
+        ctx.fillStyle = '#fff';    ctx.fillRect(8, -4, 7, 6);
+        ctx.fillStyle = '#111';    ctx.fillRect(11, -3, 4, 4);
+        ctx.fillStyle = '#FF8F00'; ctx.fillRect(14, 1, 9, 5);
+      }
       ctx.restore();
     }
 
@@ -762,7 +923,7 @@ function draw(t) {
   if (phase !== 'start') {
     const dist = Math.max(0, Math.floor(pl.x - 150));
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    roundRect(10, 10, 200, 72, 8); ctx.fill();
+    roundRect(10, 10, 200, 90, 8); ctx.fill();
     ctx.fillStyle = '#FFD600';
     ctx.font = 'bold 20px monospace';
     ctx.fillText(`PONTOK: ${score}`, 22, 36);
@@ -771,13 +932,17 @@ function draw(t) {
     ctx.fillText(`LEGJOBB: ${bestScore}`, 22, 56);
     ctx.fillStyle = '#A5D6A7';
     ctx.fillText(`TÁVOLSÁG: ${dist}m`, 22, 72);
+    // Lives display
+    ctx.font = '16px monospace';
+    const hearts = '❤️'.repeat(Math.max(0, pl.lives));
+    ctx.fillText(hearts || '💀', 22, 92);
 
     // Warp pipe legend
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    roundRect(10, 72, 160, 22, 6); ctx.fill();
-    ctx.fillStyle = '#FF9800'; ctx.fillRect(18, 79, 12, 12);
+    roundRect(10, 104, 160, 22, 6); ctx.fill();
+    ctx.fillStyle = '#FF9800'; ctx.fillRect(18, 111, 12, 12);
     ctx.fillStyle = '#ddd'; ctx.font = '11px monospace';
-    ctx.fillText('= előre warp (S)', 34, 90);
+    ctx.fillText('= előre warp (S)', 34, 122);
   }
 
   // ── Mobile controls ────────────────────────────────────────────
@@ -788,9 +953,10 @@ function draw(t) {
     drawOverlay('PUMPKIN RUN', [
       'SPACE / ENTER  →  indítás',
       '',
-      'W / SPACE  →  ugrás (dupla ugrás!)',
-      'A / D      →  mozgás',
-      'S          →  guggolás / leesés / warp',
+      'W / ↑    →  ugrás (dupla ugrás!)',
+      'A / D    →  mozgás',
+      'SPACE    →  lövés 🔫',
+      'S        →  guggolás / leesés / warp',
       '',
       '🟠 narancssárga cső = előre warp (S)',
     ]);
@@ -866,6 +1032,18 @@ function drawMobileControls() {
   ctx.fillStyle = '#fff';
   ctx.font      = 'bold 15px monospace';
   ctx.fillText('▼', BTN_D.x, BTN_D.y + 6);
+
+  // ── Shoot button ───────────────────────────────────────────────
+  const sp = CTRL.shootId !== null || (pl && pl.shootCooldown > SHOOT_CD - 4);
+  ctx.globalAlpha = sp ? 0.9 : 0.45;
+  ctx.fillStyle   = sp ? 'rgba(255,120,0,0.7)' : 'rgba(255,255,255,0.12)';
+  ctx.strokeStyle = sp ? 'rgba(255,200,0,0.9)' : 'rgba(255,150,0,0.7)';
+  ctx.lineWidth   = 2.5;
+  ctx.beginPath(); ctx.arc(BTN_S.x, BTN_S.y, BTN_S.r, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font      = 'bold 20px monospace';
+  ctx.fillText('🔫', BTN_S.x, BTN_S.y + 8);
 
   ctx.globalAlpha = 1;
   ctx.textAlign   = 'left';
