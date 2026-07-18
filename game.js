@@ -626,12 +626,33 @@ function drawPlayer() {
 // ═══════════════════════════════════════════════════════════════════
 // DRAW
 // ═══════════════════════════════════════════════════════════════════
+function drawPortraitWarning() {
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+  const fs = Math.round(W * 0.12);
+  ctx.textAlign = 'center';
+  ctx.font = `${fs}px monospace`;
+  ctx.fillStyle = '#FFD600';
+  ctx.fillText('📱', W / 2, H / 2 - fs * 1.5);
+  ctx.font = `bold ${Math.round(W * 0.055)}px monospace`;
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Forgasd el a képernyőt!', W / 2, H / 2);
+  ctx.font = `${Math.round(W * 0.04)}px monospace`;
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Please rotate your device', W / 2, H / 2 + fs * 0.9);
+  ctx.textAlign = 'left';
+}
+
 function draw(t) {
   ctx.clearRect(0, 0, W, H);
 
   // Scale all drawing to screen
   ctx.save();
   ctx.scale(S, S);
+  // Clip to design area — semmi sem csúszik ki a canvasből
+  ctx.beginPath();
+  ctx.rect(0, 0, VW, 450);
+  ctx.clip();
 
   // ── Sky ────────────────────────────────────────────────────────
   const sky = ctx.createLinearGradient(0, 0, 0, GROUND_TOP);
@@ -870,8 +891,14 @@ function drawOverlay(title, lines) {
 // LOOP
 // ═══════════════════════════════════════════════════════════════════
 function loop(ms) {
-  update();
-  draw(ms / 1000);
+  // Portrait telefon: forgasd el üzenet
+  if (W < H && W < 540) {
+    ctx.clearRect(0, 0, W, H);
+    drawPortraitWarning();
+  } else {
+    update();
+    draw(ms / 1000);
+  }
   requestAnimationFrame(loop);
 }
 
